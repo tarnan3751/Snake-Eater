@@ -77,6 +77,7 @@ try:
     game_over_sound = pygame.mixer.Sound('game_over.mp3')
     button_sound = pygame.mixer.Sound('button.mp3')
     win_sound = pygame.mixer.Sound('win.mp3')
+    bonk_sound = pygame.mixer.Sound('bonk.mp3')  # Add this line
 except pygame.error as e:
     print(f"Unable to load sound: {e}")
     pygame.quit()
@@ -90,6 +91,7 @@ explosion_sound.set_volume(volume)
 game_over_sound.set_volume(volume)
 button_sound.set_volume(volume)
 win_sound.set_volume(volume)
+bonk_sound.set_volume(volume)
 
 # Function to read scores from the file
 def read_scores():
@@ -138,19 +140,22 @@ def our_score(score, lives, level, total_score):
     text_rect = text_surface.get_rect(center=(game_width // 2, header_height // 2))
     dis.blit(text_surface, text_rect)
 
-def create_obstacles(num_obstacles, snake_list, player_position):
-    obstacles = []
+def create_obstacle(snake_list, player_position, obstacles):
     safe_distance = 30  # Ensure obstacles are at least 3 grid spaces away from the player
-    for _ in range(num_obstacles):
-        while True:
-            # Generate a random position for the obstacle
-            obs_x = round(random.randrange(0, game_width - snake_block) / 10.0) * 10.0
-            obs_y = round(random.randrange(0, game_height - snake_block) / 10.0) * 10.0
-            # Ensure obstacle is far enough from the player and not overlapping with the snake
-            if abs(obs_x - player_position[0]) >= safe_distance or abs(obs_y - player_position[1]) >= safe_distance:
-                if [obs_x, obs_y] not in snake_list:
-                    obstacles.append([obs_x, obs_y])
-                    break
+    while True:
+        # Generate a random position for the new obstacle
+        obs_x = round(random.randrange(0, game_width - snake_block) / 10.0) * 10.0
+        obs_y = round(random.randrange(0, game_height - snake_block) / 10.0) * 10.0
+
+        # Ensure obstacle is far enough from the player and does not overlap with snake or existing obstacles
+        too_close_to_player = abs(obs_x - player_position[0]) < safe_distance and abs(obs_y - player_position[1]) < safe_distance
+        obstacle_overlaps_snake = [obs_x, obs_y] in snake_list
+        obstacle_overlaps_existing = [obs_x, obs_y] in obstacles
+
+        if not too_close_to_player and not obstacle_overlaps_snake and not obstacle_overlaps_existing:
+            obstacles.append([obs_x, obs_y])
+            break
+
     return obstacles
 
 # Function to draw obstacles (bombs)
@@ -320,6 +325,7 @@ def main_menu():
                     game_over_sound.set_volume(volume)
                     button_sound.set_volume(volume)
                     win_sound.set_volume(volume)
+                    bonk_sound.set_volume(volume)
 
 # Function to display the scoreboard screen
 def scoreboard_screen():
@@ -414,18 +420,30 @@ def gameLoop():
         y1 = game_height / 2  # Snake's initial y position (center)
         x1_change = 0  # No movement in the x direction initially
         y1_change = 0  # No movement in the y direction initially
-        snake_list = []  # List to store the snake's body segments
+
+        # Initialize snake_list with the starting position
+        snake_head = [x1, y1]
+        snake_list = [snake_head]  # Initialize with the starting position
         length_of_snake = 1  # Initial length of the snake
         score_in_current_life = 0  # Score for the current life
+
+        obstacles = []  # Initialize obstacles list
 
         # Generate random position for food (apple)
         foodx = round(random.randrange(0, game_width - snake_block) / 10.0) * 10.0
         foody = round(random.randrange(0, game_height - snake_block) / 10.0) * 10.0
 
-        obstacles = create_obstacles(level + 1, snake_list, [x1, y1])  # Create obstacles
+        obstacles = create_obstacle(snake_list, [x1, y1], obstacles)  # Add only one new obstacle
+
+        # Initialize the snake movement timer and delay
+        snake_move_timer = 0.0
+        snake_move_delay = 1.0 / snake_speed  # Time in seconds between movements
 
         # Game loop for each life
         while not game_over and not game_close:
+            delta_time = clock.tick(60) / 1000.0  # Limit to 60 FPS and get delta time in seconds
+            snake_move_timer += delta_time  # Accumulate time
+
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:  # Quit the game if the window is closed
                     pygame.quit()
@@ -448,9 +466,62 @@ def gameLoop():
                         x1_change = 0
                         current_direction = 'DOWN'
 
-            # Move the snake based on the current direction
-            x1 = (x1 + x1_change) % game_width
-            y1 = (y1 + y1_change) % game_height
+            # Only move the snake if enough time has passed
+            if snake_move_timer >= snake_move_delay:
+                # Move the snake based on the current direction
+                x1 = (x1 + x1_change) % game_width
+                y1 = (y1 + y1_change) % game_height
+
+                # Update snake position
+                snake_head = [x1, y1]
+                snake_list.append(snake_head)
+                if len(snake_list) > length_of_snake:
+                    del snake_list[0]  # Remove the tail segment when the snake moves
+
+                # Check if the snake hits itself
+                for x in snake_list[:-1]:
+                    if x == snake_head:
+                        bonk_sound.play()  # Play bonk sound once
+                        game_close = True  # The player loses a life if the snake hits itself
+                        current_direction = 'UP'
+                        break  # Exit the loop immediately
+
+                # Check if the snake hits any obstacles
+                for obstacle in obstacles:
+                    if snake_head == obstacle:
+                        explosion_sound.play()
+                        game_close = True  # The player loses a life if the snake hits a bomb
+                        current_direction = 'UP'
+                        break  # Exit the loop immediately
+
+                # If game_close is True, handle life loss and break out of loop
+                if game_close:
+                    total_score += score_in_current_life  # Add current life score to total score
+                    lives -= 1  # Decrease lives
+                    level = 1  # Reset level
+                    if lives <= 0:  # End the game if no lives are left
+                        update_scores(total_score)  # Save the final score
+                        game_over = True
+                        pygame.mixer.music.stop()
+                        game_over_sound.play()
+                    break  # Exit the inner loop to start a new life or end the game
+
+                # Check if the snake eats the food (apple)
+                if x1 == foodx and y1 == foody:
+                    foodx = round(random.randrange(0, game_width - snake_block) / 10.0) * 10.0
+                    foody = round(random.randrange(0, game_height - snake_block) / 10.0) * 10.0
+                    length_of_snake += 1  # Increase the length of the snake
+                    snake_speed += 0.5  # Increase the snake speed
+                    snake_move_delay = 1.0 / snake_speed  # Update the movement delay
+                    score_in_current_life += 1  # Increase the current life score
+                    crunch_sound.play()  # Play crunch sound
+
+                    # Increase level every 5 points and add one new obstacle
+                    if length_of_snake % 5 == 0:
+                        level += 1
+                        obstacles = create_obstacle(snake_list, [x1, y1], obstacles)  # Add only one new obstacle
+
+                snake_move_timer -= snake_move_delay  # Subtract the movement delay
 
             # Draw the game field (grassy background)
             dis.blit(field_image, (0, header_height))
@@ -459,55 +530,23 @@ def gameLoop():
             dis.blit(apple_image, (foodx - 5, foody + header_height - 5))
             draw_obstacles(obstacles)
 
-            # Update snake position
-            snake_head = [x1, y1]
-            snake_list.append(snake_head)
-            if len(snake_list) > length_of_snake:
-                del snake_list[0]  # Remove the tail segment when the snake moves
-
-            # Check if the snake hits itself
-            for x in snake_list[:-1]:
-                if x == snake_head:
-                    game_close = True  # The player loses a life if the snake hits itself
-                    current_direction = 'UP'
-
-            # Check if the snake hits any obstacles
-            for obstacle in obstacles:
-                if snake_head == obstacle:
-                    explosion_sound.play()
-                    game_close = True  # The player loses a life if the snake hits a bomb
-                    current_direction = 'UP'
-
             # Draw the snake and update the score display
-            our_snake(snake_block, snake_list, current_direction)
+            if snake_list:
+                our_snake(snake_block, snake_list, current_direction)
             our_score(score_in_current_life, lives, level, total_score)
             pygame.display.update()
 
-            # Check if the snake eats the food (apple)
-            if x1 == foodx and y1 == foody:
-                foodx = round(random.randrange(0, game_width - snake_block) / 10.0) * 10.0
-                foody = round(random.randrange(0, game_height - snake_block) / 10.0) * 10.0
-                length_of_snake += 1  # Increase the length of the snake
-                snake_speed += 0.5  # Increase the snake speed
-                score_in_current_life += 1  # Increase the current life score
-                crunch_sound.play()  # Play crunch sound
-
-                # Increase level every 5 points and generate new obstacles
-                if length_of_snake % 5 == 0:
-                    level += 1
-                    obstacles = create_obstacles(level + 1, snake_list, [x1, y1])
-
-            clock.tick(int(snake_speed))  # Control the speed of the game
-
-            # If the player loses a life, reduce lives and check game over
+            # If game_close is True, handle life loss and break out of loop
             if game_close:
                 total_score += score_in_current_life  # Add current life score to total score
                 lives -= 1  # Decrease lives
+                level = 1  # Reset level
                 if lives <= 0:  # End the game if no lives are left
                     update_scores(total_score)  # Save the final score
                     game_over = True
                     pygame.mixer.music.stop()
                     game_over_sound.play()
+                break  # Exit the inner loop to start a new life or end the game
 
         # Game over screen
         if game_over:
